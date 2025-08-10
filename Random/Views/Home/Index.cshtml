@@ -1,0 +1,299 @@
+﻿@{
+    ViewBag.Title = "抽獎活動";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="container mt-3">
+    <!-- 活動名稱區 -->
+    <div class="row mb-3">
+        <div class="col-12 d-flex align-items-center">
+            <img src="~/Content/gce.png" alt="活動Logo" style="height:40px;margin-right:10px;" />
+            <h2>抽獎活動</h2>
+        </div>
+    </div>
+    <div class="row">
+        <!-- 左側：名單與獎項 -->
+        <div class="col-md-5">
+            <div class="card mb-3">
+                <div class="card-header">名單輸入區</div>
+                <div class="card-body">
+                    <textarea id="participants" class="form-control mb-2" rows="8" placeholder="每行一個名額"></textarea>
+                    <div class="mb-2">
+                        <button type="button" class="btn btn-primary btn-sm" id="importBtn">匯入名單</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="clearBtn">清除</button>
+                    </div>
+                    <div>目前名單數：<span id="count">0</span></div>
+                </div>
+            </div>
+            <div class="card mb-3">
+                <div class="card-header">獎項資料輸入區</div>
+                <div class="card-body">
+                    <div class="input-group mb-2">
+                        <input type="text" id="prizeName" class="form-control" placeholder="獎項名稱">
+                        <input type="number" id="prizeCount" class="form-control" value="1" min="1" style="max-width:80px;">
+                        <button type="button" class="btn btn-success" id="addPrize">新增</button>
+                    </div>
+                    <div id="prizeList" class="list-group"></div>
+                </div>
+            </div>
+        </div>
+        <!-- 右側：轉盤與紀錄 -->
+        <div class="col-md-7">
+            <div class="card mb-3">
+                <div class="card-header">抽獎轉盤區</div>
+                <div class="card-body text-center">
+                    <div id="currentPrize" class="mb-2" style="font-weight:bold;"></div>
+                    <canvas id="wheel" width="300" height="300" style="margin-bottom:10px;"></canvas>
+                    <div>
+                        <button class="btn btn-warning" id="drawBtn">抽獎</button>
+                    </div>
+                    <div class="mt-2">參與名單：<span id="wheelNames"></span></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">抽獎紀錄</div>
+                <div class="card-body">
+                    <ul id="winnerList" class="list-group"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 中獎彈跳視窗 -->
+<div class="modal fade" id="winnerModal" tabindex="-1" aria-labelledby="winnerModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="winnerModalLabel">🎉 恭喜中獎！</h5>
+            </div>
+            <div class="modal-body text-center">
+                <div id="modalPrize" style="font-size:1.2em;font-weight:bold;"></div>
+                <div id="modalWinner" style="font-size:2em;color:#d9534f;margin:10px 0;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="nextDrawBtn" data-bs-dismiss="modal">準備下一抽</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section scripts{
+    <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+    <script>
+        // 名單與獎項資料
+        let participants = [];
+        let prizes = [];
+        let winners = [];
+        let currentPrizeIdx = 0;
+        let isDrawing = false;
+
+        // 名單輸入
+        function updateParticipants() {
+            participants = $('#participants').val().split('\n').filter(x => x.trim() !== '');
+            $('#count').text(participants.length);
+            updateWheel();
+        }
+        $('#participants').on('input', updateParticipants);
+        $('#importBtn').click(updateParticipants);
+        $('#clearBtn').click(function () {
+            $('#participants').val('');
+            updateParticipants();
+        });
+
+        // 獎項新增
+        $('#addPrize').click(function () {
+            const name = $('#prizeName').val().trim();
+            const count = parseInt($('#prizeCount').val());
+            if (name && count > 0) {
+                prizes.push({ name, count });
+                renderPrizes();
+                $('#prizeName').val('');
+                $('#prizeCount').val(1);
+            }
+        });
+
+        // 獎項預覽與拖曳
+        function renderPrizes() {
+            let html = '';
+            prizes.forEach((p, i) => {
+                html += `<div class="list-group-item d-flex justify-content-between align-items-center" data-idx="${i}">
+                    <span>${i + 1}. ${p.name} <span class="badge bg-secondary">${p.count}</span></span>
+                    <button type="button" class="btn btn-danger btn-sm removePrize">刪除</button>
+                </div>`;
+            });
+            $('#prizeList').html(html);
+            // jQuery UI sortable
+            $('#prizeList').sortable({
+                update: function (event, ui) {
+                    const newOrder = $(this).children().map(function () { return $(this).data('idx'); }).get();
+                    prizes = newOrder.map(idx => prizes[idx]);
+                    renderPrizes();
+                }
+            });
+        }
+        $('#prizeList').on('click', '.removePrize', function () {
+            const idx = $(this).parent().data('idx');
+            prizes.splice(idx, 1);
+            renderPrizes();
+        });
+
+        // 轉盤繪製
+        function updateWheel() {
+            const canvas = document.getElementById('wheel');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const names = participants;
+            const len = names.length;
+            ctx.clearRect(0, 0, 300, 300);
+            if (len === 0) return;
+            const angle = 2 * Math.PI / len;
+            for (let i = 0; i < len; i++) {
+                ctx.beginPath();
+                ctx.moveTo(150, 150);
+                ctx.arc(150, 150, 140, i * angle, (i + 1) * angle);
+                ctx.closePath();
+                ctx.fillStyle = `hsl(${i * 360 / len}, 70%, 70%)`;
+                ctx.fill();
+                ctx.save();
+                ctx.translate(150, 150);
+                ctx.rotate((i + 0.5) * angle);
+                ctx.textAlign = "right";
+                ctx.font = "16px Arial";
+                ctx.fillStyle = "#333";
+                ctx.fillText(names[i], 130, 8);
+                ctx.restore();
+            }
+            // 畫指針
+            ctx.beginPath();
+            ctx.moveTo(150, 10);
+            ctx.lineTo(140, 30);
+            ctx.lineTo(160, 30);
+            ctx.closePath();
+            ctx.fillStyle = "#d9534f";
+            ctx.fill();
+            $('#wheelNames').text(names.join(', '));
+        }
+
+        // 畫面初始化
+        $(function () {
+            updateParticipants();
+            renderPrizes();
+            updateCurrentPrize();
+        });
+
+        // 顯示目前獎項
+        function updateCurrentPrize() {
+            if (prizes.length > 0 && currentPrizeIdx < prizes.length) {
+                $('#currentPrize').text('當前獎項：' + prizes[currentPrizeIdx].name);
+            } else {
+                $('#currentPrize').text('所有獎項已抽完');
+            }
+        }
+
+        // 抽獎邏輯
+        $('#drawBtn').click(function () {
+            if (isDrawing) return;
+            if (participants.length === 0 || prizes.length === 0 || currentPrizeIdx >= prizes.length) {
+                alert('請確認名單與獎項皆已設定，且尚有獎項可抽');
+                return;
+            }
+            if (prizes[currentPrizeIdx].count <= 0) {
+                currentPrizeIdx++;
+                updateCurrentPrize();
+                return;
+            }
+            isDrawing = true;
+            // 轉盤動畫
+            let winnerIdx = Math.floor(Math.random() * participants.length);
+            let rounds = 20 + Math.floor(Math.random() * 10);
+            let step = 0;
+            let interval = setInterval(function () {
+                let idx = (winnerIdx + step) % participants.length;
+                highlightWheel(idx);
+                step++;
+                if (step > rounds) {
+                    clearInterval(interval);
+                    setTimeout(function () {
+                        showWinner(winnerIdx);
+                    }, 500);
+                }
+            }, 80);
+        });
+
+        function highlightWheel(idx) {
+            updateWheel();
+            const canvas = document.getElementById('wheel');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const names = participants;
+            const len = names.length;
+            if (len === 0) return;
+            const angle = 2 * Math.PI / len;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(150, 150);
+            ctx.arc(150, 150, 140, idx * angle, (idx + 1) * angle);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255,215,0,0.5)";
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function showWinner(winnerIdx) {
+            const winner = participants[winnerIdx];
+            const prize = prizes[currentPrizeIdx].name;
+            $('#modalPrize').text('獎項：' + prize);
+            $('#modalWinner').text(winner);
+            $('#winnerModal').modal('show');
+            // 記錄
+            const now = new Date();
+            winners.unshift({
+                order: winners.length + 1,
+                prize: prize,
+                name: winner,
+                time: now.toLocaleString()
+            });
+            $('#winnerList').prepend(`<li class="list-group-item">${winners[0].order}. ${winners[0].prize} - ${winners[0].name} <span class="text-muted float-end">${winners[0].time}</span></li>`);
+            // 移除得獎者
+            participants.splice(winnerIdx, 1);
+            $('#participants').val(participants.join('\n'));
+            prizes[currentPrizeIdx].count--;
+            if (prizes[currentPrizeIdx].count <= 0) {
+                currentPrizeIdx++;
+            }
+            updateParticipants();
+            renderPrizes();
+            updateCurrentPrize();
+            isDrawing = false;
+        }
+
+        $('#nextDrawBtn').click(function () {
+            if (currentPrizeIdx >= prizes.length) {
+                alert('全部抽完');
+            }
+        });
+
+        // 初始化 modal
+        $('#winnerModal').on('hidden.bs.modal', function () {
+            if (currentPrizeIdx < prizes.length && prizes[currentPrizeIdx].count > 0 && participants.length > 0) {
+                $('#drawBtn').click();
+            }
+        });
+    </script>
+    <style>
+        #wheel {
+            border: 2px solid #ccc;
+            border-radius: 50%;
+            background: #fff;
+        }
+
+        .card {
+            box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        }
+
+        .list-group-item {
+            cursor: grab;
+        }
+    </style>
+}
